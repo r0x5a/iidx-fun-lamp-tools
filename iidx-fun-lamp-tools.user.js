@@ -58,7 +58,8 @@
     },
   };
 
-  const settings = Object.assign({ view: 'default', diffOn: true, mode: 'higher', snapId: null }, store.get(KEY.settings, {}));
+  const settings = Object.assign({ view: 'default', diffOn: true, mode: 'higher', snapId: null, squaresSort: true },
+    store.get(KEY.settings, {}));
   const saveSettings = () => store.set(KEY.settings, settings);
 
   // ---------- title normalisation / matching ----------
@@ -380,8 +381,10 @@ body.ifx-v-lines .ifx-snap{bottom:auto;top:50%;left:5px;width:6px;height:6px;mar
 body.ifx-v-lines .ifx-snap.ifx-ring{border-width:1.5px}
 body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!important}
 `;
-  // Squares are ordered by (current lamp, proposed lamp), both best first. The key lives in a data
-  // attribute because the site's filters overwrite the cells' style attribute.
+  // Squares are ordered by (current lamp, max(source lamp, snapshot lamp)), both best first, using only
+  // the lamps a cell is actually marked with (none: the current lamp). The "Sort" switch turns this off
+  // to keep the site's own order. The key lives in a data attribute because the site's filters overwrite
+  // the cells' style attribute.
   let orderCss = '';
   for (let k = 0; k < 64; k++) orderCss += `body.ifx-v-squares #blocks [name=songs]>.col[data-ifx-o="${k}"]{order:${k}}
 `;
@@ -403,6 +406,11 @@ body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!i
       <label class="btn btn-outline-secondary" for="ifx-view-squares">Squares</label>
       <input type="radio" class="btn-check" name="ifx-view" id="ifx-view-lines" value="lines">
       <label class="btn btn-outline-secondary" for="ifx-view-lines">Lines</label>
+    </div>
+    <div class="form-check form-switch m-0" id="ifx-sort-wrap"
+      title="On: order squares by current lamp, then by the source / snapshot lamp. Off: same order as Cards and Lines.">
+      <input class="form-check-input" type="checkbox" id="ifx-sort">
+      <label class="form-check-label" for="ifx-sort">Sort</label>
     </div>
     <div class="vr"></div>
     <div class="form-check form-switch m-0">
@@ -439,6 +447,8 @@ body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!i
 
   $('ifx-view-' + settings.view).checked = true;
   $('ifx-diff-on').checked = settings.diffOn;
+  $('ifx-sort').checked = settings.squaresSort;
+  $('ifx-sort').addEventListener('change', (e) => { settings.squaresSort = e.target.checked; saveSettings(); render(); });
   $('ifx-mode').value = settings.mode;
   bar.querySelectorAll('input[name=ifx-view]').forEach((r) => r.addEventListener('change', () => {
     settings.view = r.value; saveSettings(); render();
@@ -645,6 +655,7 @@ ${higher
     b.toggle('ifx-v-squares', settings.view === 'squares');
     b.toggle('ifx-v-lines', settings.view === 'lines');
     b.toggle('ifx-snap-on', !!activeSnap());
+    $('ifx-sort-wrap').style.display = settings.view === 'squares' ? '' : 'none';
 
     blocks.querySelectorAll('.ifx-dot, .ifx-snap').forEach((d) => d.remove());
     blocks.querySelectorAll('.ifx-hi, .ifx-lo').forEach((c) => c.classList.remove('ifx-hi', 'ifx-lo'));
@@ -665,6 +676,7 @@ ${higher
       let tip = `${r.title} · ${LAMPS[r.site] || '?'}`;
       if (r.src !== null && r.state !== 'same') tip += ` (source: ${LAMPS[r.src]})`;
 
+      let prev = null; // snapshot lamp, when it differs from the current one
       if (cmp && r.title && r.site >= 0) {
         if (!Object.hasOwn(snap.lamps, r.title)) cmp.missing++;
         else {
@@ -673,6 +685,7 @@ ${higher
           cmp.now[r.site]++;
           if (old === r.site) cmp.same++;
           else {
+            prev = old;
             const up = r.site > old;
             (up ? cmp.up : cmp.down).push({ title: r.title, from: old, to: r.site });
             tip += ` (snapshot: ${LAMPS[old]})`;
@@ -688,9 +701,12 @@ ${higher
       if (settings.view !== 'default') card.title = tip; else card.removeAttribute('title');
 
       const mark = show && (r.state === 'higher' || (r.state === 'lower' && settings.mode === 'all'));
-      const site = Math.max(0, r.site);
-      const proposed = mark ? r.src : site;
-      col.dataset.ifxO = String((7 - site) * 8 + (7 - proposed));
+      if (settings.squaresSort) {
+        // secondary key: the source lamp and/or the snapshot lamp, whichever markers this cell shows
+        const site = Math.max(0, r.site);
+        const second = Math.max(mark ? r.src : -1, prev ?? -1);
+        col.dataset.ifxO = String((7 - site) * 8 + (7 - (second < 0 ? site : second)));
+      } else delete col.dataset.ifxO;
       if (!mark) continue;
       card.classList.add(r.state === 'higher' ? 'ifx-hi' : 'ifx-lo');
       const dot = document.createElement('span');
