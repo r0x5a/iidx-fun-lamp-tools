@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         iidx.fun lamp tools
 // @namespace    iidx-fun-scripts
-// @version      0.2.0
-// @description  Compact views (squares / single-line), a lamp diff against an e-amusement CSV or Asphyxia JSON export, and lamp snapshots to track progress on iidx.fun clear tables.
+// @version      0.3.0
+// @description  Compact views (squares / single-line), a lamp diff against an e-amusement CSV or Asphyxia JSON export, and lamp snapshots to track progress (or view a page as it was) on iidx.fun clear tables.
 // @match        https://www.iidx.fun/clear/*
 // @match        https://iidx.fun/clear/*
 // @grant        GM_getValue
@@ -19,6 +19,8 @@
  *  - Snapshots: the site's own lamps on a page, saved at a point in time and compared later to show
  *    progress. Keyed by the site title, so a snapshot also works on other pages listing the same charts.
  *    Exported snapshot files (format "ifx-snapshot") load back through the same file button.
+ *    "View as snapshot" paints every cell with its snapshot lamp instead of diffing (display only: the
+ *    site's own lamps and selects are left untouched underneath, and editing is disabled meanwhile).
  *
  * Site title conventions: "Title" = ANOTHER, "Title[H]" = HYPER, "Title[A]" = ANOTHER, "Title†" = LEGGENDARIA.
  * Lamp values on the site's <select> (0..7) are the same as Asphyxia cArray values.
@@ -58,7 +60,7 @@
     },
   };
 
-  const settings = Object.assign({ view: 'default', diffOn: true, mode: 'higher', snapId: null, squaresSort: true },
+  const settings = Object.assign({ view: 'default', diffOn: true, mode: 'higher', snapId: null, squaresSort: true, snapView: false },
     store.get(KEY.settings, {}));
   const saveSettings = () => store.set(KEY.settings, settings);
 
@@ -311,18 +313,21 @@
   }
 
   // ---------- colours ----------
-  const LAMP_COLOR = CARD_CLASS.map((c) => {
+  const LAMP_COLOR = [], LAMP_FG = [];
+  for (const c of CARD_CLASS) {
     const x = document.createElement('div');
     x.className = c;
     x.style.display = 'none';
     document.body.appendChild(x);
-    const bg = getComputedStyle(x).backgroundColor;
+    const cs = getComputedStyle(x);
+    const bg = cs.backgroundColor;
+    LAMP_FG.push(cs.color);
     x.remove();
     const m = bg.match(/[\d.]+/g) || [255, 255, 255, 1];
     const a = m[3] === undefined ? 1 : +m[3];
     const mix = (v) => Math.round(+v * a + 255 * (1 - a));
-    return `rgb(${mix(m[0])}, ${mix(m[1])}, ${mix(m[2])})`;
-  });
+    LAMP_COLOR.push(`rgb(${mix(m[0])}, ${mix(m[1])}, ${mix(m[2])})`);
+  }
 
   // ---------- styles ----------
   const css = `
@@ -380,6 +385,11 @@ body.ifx-v-lines #blocks [name=songs] .card-title{margin:0;font-size:12px;line-h
 body.ifx-v-lines .ifx-snap{bottom:auto;top:50%;left:5px;width:6px;height:6px;margin-top:-3px}
 body.ifx-v-lines .ifx-snap.ifx-ring{border-width:1.5px}
 body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!important}
+
+/* snapshot view: cells painted with the snapshot lamp (data-ifx-tt), editing disabled */
+body.ifx-tt #blocks [name=songs] select[id^=selectLamp]{display:none!important}
+body.ifx-tt #blocks [name=songs] .card[data-ifx-tt="-"]{opacity:.35}
+#ifx-bar.ifx-tt-bar{box-shadow:0 0 0 2px #198754}
 `;
   // Squares are ordered by (current lamp, max(source lamp, snapshot lamp)), both best first, using only
   // the lamps a cell is actually marked with (none: the current lamp). The "Sort" switch turns this off
@@ -388,8 +398,14 @@ body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!i
   let orderCss = '';
   for (let k = 0; k < 64; k++) orderCss += `body.ifx-v-squares #blocks [name=songs]>.col[data-ifx-o="${k}"]{order:${k}}
 `;
+  // Snapshot view colours, one rule per lamp; the attribute selector outranks the site's text-bg-* classes.
+  let ttCss = '';
+  for (let l = 0; l < 8; l++) ttCss += `body.ifx-tt #blocks [name=songs] .card[data-ifx-tt="${l}"]{background-color:${LAMP_COLOR[l]}!important;color:${LAMP_FG[l]}!important}
+`;
+  ttCss += `body.ifx-tt #blocks [name=songs] .card[data-ifx-tt="-"]{background-color:${LAMP_COLOR[0]}!important;color:${LAMP_FG[0]}!important}
+`;
   const style = document.createElement('style');
-  style.textContent = css + orderCss;
+  style.textContent = css + orderCss + ttCss;
   document.head.appendChild(style);
 
   // ---------- toolbar ----------
@@ -408,7 +424,7 @@ body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!i
       <label class="btn btn-outline-secondary" for="ifx-view-lines">Lines</label>
     </div>
     <div class="form-check form-switch m-0" id="ifx-sort-wrap"
-      title="On: order squares by current lamp, then by the source / snapshot lamp. Off: same order as Cards and Lines.">
+      title="On: order squares by current lamp, then by the source / snapshot lamp (in snapshot view: by snapshot lamp). Off: same order as Cards and Lines.">
       <input class="form-check-input" type="checkbox" id="ifx-sort">
       <label class="form-check-label" for="ifx-sort">Sort</label>
     </div>
@@ -431,7 +447,12 @@ body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!i
     </div>
   </div>
   <div class="d-flex flex-wrap align-items-center gap-2 mt-1">
-    <select id="ifx-snap" class="form-select form-select-sm w-auto" title="Snapshot to compare the current lamps against"></select>
+    <select id="ifx-snap" class="form-select form-select-sm w-auto" title="Snapshot to compare against or view"></select>
+    <div class="form-check form-switch m-0" id="ifx-snap-view-wrap"
+      title="Show this page as it was when the snapshot was taken, instead of diffing it against the current lamps">
+      <input class="form-check-input" type="checkbox" id="ifx-snap-view">
+      <label class="form-check-label" for="ifx-snap-view">View as snapshot</label>
+    </div>
     <button type="button" id="ifx-snap-take" class="btn btn-sm btn-outline-success"
       title="Save the current lamps on this page so you can track progress later">Take snapshot</button>
     <button type="button" id="ifx-snap-export" class="btn btn-sm btn-outline-secondary" title="Download the selected snapshot">Export</button>
@@ -468,6 +489,8 @@ body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!i
   $('ifx-snap').addEventListener('change', (e) => {
     settings.snapId = e.target.value || null; saveSettings(); renderSnapSelect(); render();
   });
+  $('ifx-snap-view').checked = settings.snapView;
+  $('ifx-snap-view').addEventListener('change', (e) => { settings.snapView = e.target.checked; saveSettings(); render(); });
   $('ifx-snap-take').addEventListener('click', takeSnapshot);
   $('ifx-snap-export').addEventListener('click', () => { const s = activeSnap(); if (s) exportSnapshot(s); });
   $('ifx-snap-del').addEventListener('click', () => {
@@ -482,13 +505,14 @@ body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!i
   function renderSnapSelect() {
     if (!activeSnap()) settings.snapId = null;
     const sel = $('ifx-snap');
-    sel.innerHTML = `<option value="">${snaps.length ? 'Compare with snapshot…' : 'No snapshots'}</option>`
+    sel.innerHTML = `<option value="">${snaps.length ? 'Snapshot…' : 'No snapshots'}</option>`
       + snaps.map((s) => {
         const extra = s.path && s.path !== location.pathname ? `, ${s.path}` : '';
         return `<option value="${esc(s.id)}">${esc(s.name)} (${Object.keys(s.lamps).length} charts${esc(extra)})</option>`;
       }).join('');
     sel.value = settings.snapId || '';
     $('ifx-snap-export').disabled = $('ifx-snap-del').disabled = !settings.snapId;
+    $('ifx-snap-view-wrap').style.display = settings.snapId ? '' : 'none';
   }
 
   let lastMessages = [];
@@ -637,12 +661,14 @@ ${higher
     if (t.closest('select')) return;
     if (e.altKey) return; // Alt+click keeps the site's chart-info dialog
     e.preventDefault(); e.stopPropagation();
+    if (snapViewing()) return; // read-only while showing a snapshot
     openSelect(card);
   }, true);
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closePop(); closeOpen(); } });
 
   // ---------- render ----------
   let results = new Map();
+  const snapViewing = () => settings.snapView && !!activeSnap();
   function fmtDate(ms) {
     const d = new Date(ms), p = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
@@ -654,20 +680,41 @@ ${higher
     b.toggle('ifx-compact', settings.view !== 'default');
     b.toggle('ifx-v-squares', settings.view === 'squares');
     b.toggle('ifx-v-lines', settings.view === 'lines');
-    b.toggle('ifx-snap-on', !!activeSnap());
+    const snap = activeSnap();
+    const viewing = snapViewing();
+    b.toggle('ifx-snap-on', !!snap && !viewing);
+    b.toggle('ifx-tt', viewing);
+    bar.classList.toggle('ifx-tt-bar', viewing);
+    $('ifx-diff-on').disabled = $('ifx-mode').disabled = viewing;
     $('ifx-sort-wrap').style.display = settings.view === 'squares' ? '' : 'none';
+    if (viewing) closeOpen();
 
     blocks.querySelectorAll('.ifx-dot, .ifx-snap').forEach((d) => d.remove());
     blocks.querySelectorAll('.ifx-hi, .ifx-lo').forEach((c) => c.classList.remove('ifx-hi', 'ifx-lo'));
+    blocks.querySelectorAll('[data-ifx-tt]').forEach((c) => { delete c.dataset.ifxTt; });
 
     results = new Map();
     const count = { higher: 0, lower: 0, same: 0, unplayed: 0, unmatched: [], inf: 0 };
-    const show = settings.diffOn && index.src;
-    const snap = activeSnap();
+    const show = settings.diffOn && index.src && !viewing;
     const cmp = snap && { up: [], down: [], same: 0, missing: 0, then: Array(8).fill(0), now: Array(8).fill(0) };
     for (const col of blocks.querySelectorAll('[name=songs] > .col')) {
       const card = col.querySelector('.card');
       if (!card) continue;
+
+      if (viewing) {
+        // Going back in time: only the snapshot's lamps, nothing about the present.
+        const title = siteLamp(col).title;
+        const has = !!title && Object.hasOwn(snap.lamps, title);
+        const old = has ? snap.lamps[title] : null;
+        card.dataset.ifxTt = has ? String(old) : '-';
+        if (has) cmp.then[old]++; else cmp.missing++;
+        if (settings.view !== 'default') card.title = `${title} · ${has ? LAMPS[old] : 'not in snapshot'}`;
+        else card.removeAttribute('title');
+        if (settings.squaresSort) col.dataset.ifxO = String(has ? (7 - old) * 9 : 63);
+        else delete col.dataset.ifxO;
+        continue;
+      }
+
       const r = evalCol(col);
       results.set(col, r);
       if (r.state === 'unmatched') count.unmatched.push(r.title);
@@ -731,11 +778,11 @@ ${higher
     }
     $('ifx-status').textContent = [...lastMessages, parts.join(' · ')].join(' | ');
 
-    renderSnapSummary(snap, cmp);
+    renderSnapSummary(snap, cmp, viewing);
 
     const sum = $('ifx-summary');
     const um = $('ifx-unmatched');
-    if (!index.src) { sum.innerHTML = ''; um.hidden = true; return; }
+    if (!index.src || viewing) { sum.innerHTML = ''; um.hidden = true; return; }
     sum.innerHTML = `This page: <b>${count.higher}</b> higher · ${count.lower} lower · ${count.same} same`
       + (count.unmatched.length ? ` · <a class="link-secondary" id="ifx-um-toggle">${count.unmatched.length} unmatched</a>` : '')
       + (count.unplayed ? ` · ${count.unplayed} not played in source` : '')
@@ -746,10 +793,25 @@ ${higher
     else um.hidden = true;
   }
 
-  function renderSnapSummary(snap, cmp) {
+  function renderSnapSummary(snap, cmp, viewing) {
     const ss = $('ifx-snap-summary');
     const sd = $('ifx-snap-details');
     if (!cmp) { ss.innerHTML = ''; sd.innerHTML = ''; sd.hidden = true; return; }
+    if (viewing) {
+      sd.hidden = true;
+      const dist = [];
+      for (let l = 7; l >= 0; l--) if (cmp.then[l]) dist.push(`<span class="me-2 text-nowrap">${chip(l)} ${cmp.then[l]}</span>`);
+      ss.innerHTML = '<span class="badge text-bg-success me-1">Snapshot view</span>'
+        + `As of ${esc(fmtDate(snap.createdAt))}: ${dist.join('') || 'no charts in common'}`
+        + (cmp.missing ? ` · ${cmp.missing} not in snapshot (faded)` : '')
+        + ' · <a class="link-secondary" id="ifx-snap-now">back to now</a>';
+      $('ifx-snap-now').addEventListener('click', () => {
+        settings.snapView = false; saveSettings();
+        $('ifx-snap-view').checked = false;
+        render();
+      });
+      return;
+    }
     ss.innerHTML = `Since snapshot: <b>${cmp.up.length}</b> improved · ${cmp.down.length} lower · ${cmp.same} unchanged`
       + (cmp.missing ? ` · ${cmp.missing} not in snapshot` : '')
       + ` · <a class="link-secondary" id="ifx-snap-toggle">${sd.hidden ? 'details' : 'hide details'}</a>`;
