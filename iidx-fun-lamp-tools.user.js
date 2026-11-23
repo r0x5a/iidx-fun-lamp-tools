@@ -1,8 +1,14 @@
 // ==UserScript==
 // @name         iidx.fun lamp tools
-// @namespace    iidx-fun-scripts
-// @version      0.3.0
+// @namespace    https://github.com/r0x5a/iidx-fun-lamp-tools
+// @version      0.3.1
+// @author       triv
+// @license      MIT
 // @description  Compact views (squares / single-line), a lamp diff against an e-amusement CSV or Asphyxia JSON export, and lamp snapshots to track progress (or view a page as it was) on iidx.fun clear tables.
+// @homepageURL  https://github.com/r0x5a/iidx-fun-lamp-tools
+// @supportURL   https://github.com/r0x5a/iidx-fun-lamp-tools/issues
+// @updateURL    https://raw.githubusercontent.com/r0x5a/iidx-fun-lamp-tools/master/iidx-fun-lamp-tools.user.js
+// @downloadURL  https://raw.githubusercontent.com/r0x5a/iidx-fun-lamp-tools/master/iidx-fun-lamp-tools.user.js
 // @match        https://www.iidx.fun/clear/*
 // @match        https://iidx.fun/clear/*
 // @grant        GM_getValue
@@ -256,14 +262,15 @@
   // ---------- snapshots ----------
   // { id, name, createdAt, path, lamps: { siteTitle: 0..7 } }, newest first
   let snaps = store.get(KEY.snaps, []);
-  const saveSnaps = () => store.set(KEY.snaps, snaps);
+  // Apply a change to the stored list, not this tab's copy: other tabs may have saved since page load.
+  function updateSnaps(fn) {
+    snaps = fn(store.get(KEY.snaps, snaps)).sort((a, b) => b.createdAt - a.createdAt);
+    store.set(KEY.snaps, snaps);
+  }
   const activeSnap = () => snaps.find((s) => s.id === settings.snapId) || null;
 
   function addSnapshot(s) {
-    snaps = snaps.filter((x) => x.id !== s.id);
-    snaps.push(s);
-    snaps.sort((a, b) => b.createdAt - a.createdAt);
-    saveSnaps();
+    updateSnaps((list) => [...list.filter((x) => x.id !== s.id), s]);
     settings.snapId = s.id;
     saveSettings();
   }
@@ -496,8 +503,7 @@ body.ifx-tt #blocks [name=songs] .card[data-ifx-tt="-"]{opacity:.35}
   $('ifx-snap-del').addEventListener('click', () => {
     const s = activeSnap();
     if (!s || !confirm(`Delete snapshot "${s.name}"?`)) return;
-    snaps = snaps.filter((x) => x !== s);
-    saveSnaps();
+    updateSnaps((list) => list.filter((x) => x.id !== s.id));
     settings.snapId = null; saveSettings();
     renderSnapSelect(); render();
   });
