@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         iidx.fun lamp tools
 // @namespace    https://github.com/r0x5a/iidx-fun-lamp-tools
-// @version      0.4.0
+// @version      0.5.0
 // @author       triv
 // @license      MIT
-// @description  Compact views (squares / single-line), a lamp diff against an e-amusement CSV or Asphyxia JSON export, lamp snapshots to track progress (or view a page as it was), and song tags on iidx.fun clear tables.
+// @description  Compact views (squares / single-line), a lamp diff against an e-amusement CSV or Asphyxia JSON export, lamp snapshots to track progress (or view a page as it was), song tags, and an optional Ctrl+F shortcut for the site's search on iidx.fun clear tables.
 // @homepageURL  https://github.com/r0x5a/iidx-fun-lamp-tools
 // @supportURL   https://github.com/r0x5a/iidx-fun-lamp-tools/issues
 // @updateURL    https://raw.githubusercontent.com/r0x5a/iidx-fun-lamp-tools/master/iidx-fun-lamp-tools.user.js
@@ -31,6 +31,10 @@
  *    (Shift+right-click keeps the browser menu). Selecting tags in the toolbar (one or several; songs with
  *    any or all of them) hides every other cell (display only) and limits the diff / snapshot summaries
  *    to the shown cells; taking a snapshot always covers the whole page.
+ *  - Ctrl+F (opt-in, switch next to the site's search box): focuses the site's own title search instead of
+ *    opening the browser's find bar, whose highlight is hard to spot on the coloured cells. Pressing it again
+ *    while the search box is focused falls through to the browser's find. While it is on, Escape clears the
+ *    search wherever the focus is.
  *
  * Site title conventions: "Title" = ANOTHER, "Title[H]" = HYPER, "Title[A]" = ANOTHER, "Title†" = LEGGENDARIA.
  * Lamp values on the site's <select> (0..7) are the same as Asphyxia cArray values.
@@ -70,7 +74,7 @@
     },
   };
 
-  const settings = Object.assign({ view: 'default', diffOn: true, mode: 'higher', snapId: null, squaresSort: true, snapView: false, tagIds: [], tagMatch: 'any' },
+  const settings = Object.assign({ view: 'default', diffOn: true, mode: 'higher', snapId: null, squaresSort: true, snapView: false, tagIds: [], tagMatch: 'any', ctrlF: false },
     store.get(KEY.settings, {}));
   if (settings.tagId) settings.tagIds = [settings.tagId]; // 0.4.0 pre-release: a single selected tag
   delete settings.tagId;
@@ -844,6 +848,37 @@ ${higher
     openTagPop(card, title);
   }, true);
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closePop(); closeOpen(); } });
+
+  // ---------- Ctrl+F: focus the site's search ----------
+  const search = document.getElementById('searchTitle');
+  if (search) {
+    // A switch next to the site's search box (its form lays items out as .col-auto cells).
+    const cell = document.createElement('div');
+    cell.className = 'col-auto d-flex align-items-center';
+    cell.innerHTML = `
+<div class="form-check form-switch m-0" title="On: Ctrl+F focuses this search box instead of the browser's find bar (press it again in the box for the browser's find), and Escape clears the search.">
+  <input class="form-check-input" type="checkbox" id="ifx-ctrlf">
+  <label class="form-check-label" for="ifx-ctrlf">Ctrl+F</label>
+</div>`;
+    (search.closest('.col-auto') || search).after(cell);
+    const sw = cell.querySelector('#ifx-ctrlf');
+    sw.checked = settings.ctrlF;
+    sw.addEventListener('change', () => { settings.ctrlF = sw.checked; saveSettings(); });
+    window.addEventListener('keydown', (e) => {
+      if (!settings.ctrlF || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'f') return;
+      if (document.activeElement === search) return; // second press: the browser's own find
+      e.preventDefault();
+      closePop(); closeOpen();
+      search.focus();
+      search.select();
+    }, true);
+    // Escape clears the search wherever the focus is; the site refilters on its input event.
+    window.addEventListener('keydown', (e) => {
+      if (!settings.ctrlF || e.key !== 'Escape' || !search.value) return;
+      search.value = '';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    }, true);
+  }
 
   // ---------- render ----------
   let results = new Map();
