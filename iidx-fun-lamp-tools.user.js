@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         iidx.fun lamp tools
 // @namespace    https://github.com/r0x5a/iidx-fun-lamp-tools
-// @version      0.3.1
+// @version      0.4.0
 // @author       triv
 // @license      MIT
-// @description  Compact views (squares / single-line), a lamp diff against an e-amusement CSV or Asphyxia JSON export, and lamp snapshots to track progress (or view a page as it was) on iidx.fun clear tables.
+// @description  Compact views (squares / single-line), a lamp diff against an e-amusement CSV or Asphyxia JSON export, lamp snapshots to track progress (or view a page as it was), and song tags on iidx.fun clear tables.
 // @homepageURL  https://github.com/r0x5a/iidx-fun-lamp-tools
 // @supportURL   https://github.com/r0x5a/iidx-fun-lamp-tools/issues
 // @updateURL    https://raw.githubusercontent.com/r0x5a/iidx-fun-lamp-tools/master/iidx-fun-lamp-tools.user.js
@@ -27,6 +27,10 @@
  *    Exported snapshot files (format "ifx-snapshot") load back through the same file button.
  *    "View as snapshot" paints every cell with its snapshot lamp instead of diffing (display only: the
  *    site's own lamps and selects are left untouched underneath, and editing is disabled meanwhile).
+ *  - Tags: named sets of charts, also keyed by the site title. Right-click a cell to add or remove tags
+ *    (Shift+right-click keeps the browser menu). Selecting tags in the toolbar (one or several; songs with
+ *    any or all of them) hides every other cell (display only) and limits the diff / snapshot summaries
+ *    to the shown cells; taking a snapshot always covers the whole page.
  *
  * Site title conventions: "Title" = ANOTHER, "Title[H]" = HYPER, "Title[A]" = ANOTHER, "Title†" = LEGGENDARIA.
  * Lamp values on the site's <select> (0..7) are the same as Asphyxia cArray values.
@@ -45,7 +49,7 @@
     NOPLAY: 0, FAILED: 1, ASSISTCLEAR: 2, EASYCLEAR: 3, CLEAR: 4,
     HARDCLEAR: 5, EXHARDCLEAR: 6, FULLCOMBO: 7, FULLCOMBOCLEAR: 7,
   };
-  const KEY = { settings: 'ifx.settings', music: 'ifx.music', source: 'ifx.source', snaps: 'ifx.snapshots' };
+  const KEY = { settings: 'ifx.settings', music: 'ifx.music', source: 'ifx.source', snaps: 'ifx.snapshots', tags: 'ifx.tags' };
 
   // ---------- storage (GM_* in a userscript manager, localStorage fallback) ----------
   const store = {
@@ -66,8 +70,10 @@
     },
   };
 
-  const settings = Object.assign({ view: 'default', diffOn: true, mode: 'higher', snapId: null, squaresSort: true, snapView: false },
+  const settings = Object.assign({ view: 'default', diffOn: true, mode: 'higher', snapId: null, squaresSort: true, snapView: false, tagIds: [], tagMatch: 'any' },
     store.get(KEY.settings, {}));
+  if (settings.tagId) settings.tagIds = [settings.tagId]; // 0.4.0 pre-release: a single selected tag
+  delete settings.tagId;
   const saveSettings = () => store.set(KEY.settings, settings);
 
   // ---------- title normalisation / matching ----------
@@ -319,6 +325,62 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  // ---------- tags ----------
+  // { id, name, titles: [siteTitle] }, sorted by name
+  let tags = store.get(KEY.tags, []);
+  // As with snapshots, changes apply to the stored tags so other tabs' edits are kept.
+  function updateTags(fn) {
+    tags = fn(store.get(KEY.tags, tags)).sort((a, b) => a.name.localeCompare(b.name));
+    store.set(KEY.tags, tags);
+  }
+  const selectedTags = () => tags.filter((x) => settings.tagIds.includes(x.id));
+  // The titles to show: songs with any (or all) of the selected tags; null when no tag is selected.
+  function tagFilter() {
+    const sel = selectedTags();
+    if (!sel.length) return null;
+    const sets = sel.map((x) => new Set(x.titles));
+    const titles = settings.tagMatch === 'all'
+      ? new Set([...sets[0]].filter((t) => sets.every((x) => x.has(t))))
+      : new Set(sets.flatMap((x) => [...x]));
+    return { titles };
+  }
+
+  function setTag(id, title, on) {
+    updateTags((all) => all.map((x) => {
+      if (x.id !== id) return x;
+      const titles = x.titles.filter((t) => t !== title);
+      if (on) titles.push(title);
+      return { ...x, titles };
+    }));
+  }
+
+  // Prompt for a name and create a tag holding `titles`; an existing tag of that name gets them instead.
+  function createTag(titles) {
+    const name = (prompt('Name for the new tag:') || '').trim();
+    if (!name) return false;
+    updateTags((all) => {
+      const same = all.find((x) => x.name === name);
+      lastMessages = [same ? `Tag "${name}" already exists` : `Tag "${name}" created`];
+      if (same) return all.map((x) => (x === same ? { ...x, titles: [...new Set([...x.titles, ...titles])] } : x));
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      return [...all, { id, name, titles: [...titles] }];
+    });
+    return true;
+  }
+
+  function renameTag(tag) {
+    const name = (prompt('New name for this tag:', tag.name) || '').trim();
+    if (!name || name === tag.name) return;
+    updateTags((all) => {
+      if (all.some((x) => x.name === name && x.id !== tag.id)) {
+        lastMessages = [`Tag "${name}" already exists`];
+        return all;
+      }
+      lastMessages = [];
+      return all.map((x) => (x.id === tag.id ? { ...x, name } : x));
+    });
+  }
+
   // ---------- colours ----------
   const LAMP_COLOR = [], LAMP_FG = [];
   for (const c of CARD_CLASS) {
@@ -392,6 +454,10 @@ body.ifx-v-lines #blocks [name=songs] .card-title{margin:0;font-size:12px;line-h
 body.ifx-v-lines .ifx-snap{bottom:auto;top:50%;left:5px;width:6px;height:6px;margin-top:-3px}
 body.ifx-v-lines .ifx-snap.ifx-ring{border-width:1.5px}
 body.ifx-v-lines.ifx-snap-on #blocks [name=songs] .card-body{padding-left:16px!important}
+
+/* tag filter: attributes, because the site's own filters overwrite the cells' style */
+#blocks [name=songs]>.col[data-ifx-hide],#blocks .col-md-12[data-ifx-empty]{display:none!important}
+.ifx-pop .ifx-tags{max-height:14rem;overflow:auto}
 
 /* snapshot view: cells painted with the snapshot lamp (data-ifx-tt), editing disabled */
 body.ifx-tt #blocks [name=songs] select[id^=selectLamp]{display:none!important}
@@ -467,6 +533,19 @@ body.ifx-tt #blocks [name=songs] .card[data-ifx-tt="-"]{opacity:.35}
     <span id="ifx-snap-summary"></span>
   </div>
   <div id="ifx-snap-details" class="mt-1" hidden></div>
+  <div class="d-flex flex-wrap align-items-center gap-2 mt-1">
+    <div id="ifx-tags" class="d-flex flex-wrap gap-1" role="group" aria-label="Show only the songs with these tags"></div>
+    <div class="btn-group btn-group-sm" role="group" id="ifx-tag-match" title="Show songs with any of the selected tags, or only those with all of them">
+      <input type="radio" class="btn-check" name="ifx-tag-match" id="ifx-tag-match-any" value="any">
+      <label class="btn btn-outline-secondary" for="ifx-tag-match-any">Any</label>
+      <input type="radio" class="btn-check" name="ifx-tag-match" id="ifx-tag-match-all" value="all">
+      <label class="btn btn-outline-secondary" for="ifx-tag-match-all">All</label>
+    </div>
+    <button type="button" id="ifx-tag-new" class="btn btn-sm btn-outline-success">New tag</button>
+    <button type="button" id="ifx-tag-rename" class="btn btn-sm btn-outline-secondary">Rename</button>
+    <button type="button" id="ifx-tag-del" class="btn btn-sm btn-outline-secondary">Delete</button>
+    <span id="ifx-tag-summary"></span>
+  </div>
   <div id="ifx-status" class="text-secondary mt-1"></div>
   <div id="ifx-unmatched" class="mt-1 text-secondary" hidden></div>
 </div>`;
@@ -507,6 +586,49 @@ body.ifx-tt #blocks [name=songs] .card[data-ifx-tt="-"]{opacity:.35}
     settings.snapId = null; saveSettings();
     renderSnapSelect(); render();
   });
+
+  $('ifx-tags').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-tag]');
+    if (!btn) return;
+    const id = btn.dataset.tag;
+    // "All songs" clears the selection; a tag button toggles that tag.
+    settings.tagIds = !id ? [] : settings.tagIds.includes(id)
+      ? settings.tagIds.filter((x) => x !== id) : [...settings.tagIds, id];
+    saveSettings(); renderTagSelect(); render();
+  });
+  $('ifx-tag-match-' + settings.tagMatch).checked = true;
+  bar.querySelectorAll('input[name=ifx-tag-match]').forEach((r) => r.addEventListener('change', () => {
+    settings.tagMatch = r.value; saveSettings(); render();
+  }));
+  // Rename and Delete act on the selected tag, so they need exactly one.
+  const soleTag = () => { const sel = selectedTags(); return sel.length === 1 ? sel[0] : null; };
+  $('ifx-tag-new').addEventListener('click', () => { if (createTag([])) { renderTagSelect(); render(); } });
+  $('ifx-tag-rename').addEventListener('click', () => {
+    const tag = soleTag();
+    if (tag) { renameTag(tag); renderTagSelect(); render(); }
+  });
+  $('ifx-tag-del').addEventListener('click', () => {
+    const tag = soleTag();
+    if (!tag || !confirm(`Delete tag "${tag.name}" (${tag.titles.length} songs)?`)) return;
+    updateTags((all) => all.filter((x) => x.id !== tag.id));
+    settings.tagIds = settings.tagIds.filter((x) => x !== tag.id); saveSettings();
+    renderTagSelect(); render();
+  });
+
+  function renderTagSelect() {
+    settings.tagIds = settings.tagIds.filter((id) => tags.some((x) => x.id === id)); // drop deleted tags
+    // One button per tag, plus "All songs"; selected ones are filled in.
+    const btn = (id, label) => {
+      const on = id ? settings.tagIds.includes(id) : !settings.tagIds.length;
+      return `<button type="button" class="btn btn-sm ${on ? 'btn-primary' : 'btn-outline-primary'}" data-tag="${esc(id)}"`
+        + ` aria-pressed="${on}">${label}</button>`;
+    };
+    $('ifx-tags').innerHTML = tags.length
+      ? btn('', 'All songs') + tags.map((x) => btn(x.id, `${esc(x.name)} (${x.titles.length})`)).join('')
+      : '';
+    $('ifx-tag-match').style.display = settings.tagIds.length > 1 ? '' : 'none';
+    $('ifx-tag-rename').disabled = $('ifx-tag-del').disabled = !soleTag();
+  }
 
   function renderSnapSelect() {
     if (!activeSnap()) settings.snapId = null;
@@ -591,17 +713,58 @@ ${higher
     : `<div class="text-secondary mb-1">The source lamp is lower than the site's, so no quick replace.</div>
        <div class="d-flex justify-content-end"><button type="button" class="btn btn-sm btn-secondary" data-act="cancel">Close</button></div>`}
 <div class="text-danger mt-1" data-msg hidden></div>`;
+    placePop(dot);
+    pop.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'cancel') closePop();
+      if (act === 'apply') applyLamp(r, e.target);
+    });
+  }
+
+  function placePop(anchor) {
     document.body.appendChild(pop);
-    const d = dot.getBoundingClientRect();
+    const d = anchor.getBoundingClientRect();
     const w = pop.offsetWidth;
     let left = d.right + 6;
     if (left + w > document.documentElement.clientWidth - 4) left = d.left - 6 - w;
     pop.style.left = `${Math.max(4, left) + scrollX}px`;
     pop.style.top = `${d.top + scrollY - 4}px`;
+  }
+
+  function openTagPop(card, title) {
+    closePop();
+    tags = store.get(KEY.tags, tags); // pick up changes made in other tabs
+    pop = document.createElement('div');
+    pop.className = 'ifx-pop card shadow p-2 small';
+    const fill = () => {
+      pop.innerHTML = `
+<div class="fw-bold text-truncate mb-1" title="${esc(title)}">${esc(title)}</div>
+<div class="ifx-tags mb-2">${tags.map((x) => `
+  <label class="form-check m-0 d-block text-truncate" title="${esc(x.name)}">
+    <input type="checkbox" class="form-check-input" data-tag="${esc(x.id)}"${x.titles.includes(title) ? ' checked' : ''}>
+    ${esc(x.name)}
+  </label>`).join('') || '<span class="text-secondary">No tags yet.</span>'}</div>
+<div class="d-flex gap-1 justify-content-end">
+  <button type="button" class="btn btn-sm btn-outline-success" data-act="new">New tag…</button>
+  <button type="button" class="btn btn-sm btn-secondary" data-act="cancel">Close</button>
+</div>`;
+    };
+    // The popup stays open so a song can get several tags, even if the filter hides its cell.
+    const refresh = () => { renderTagSelect(); render(true); };
+    fill();
+    placePop(card);
+    refresh();
+    pop.addEventListener('change', (e) => {
+      const id = e.target.dataset.tag;
+      if (!id) return;
+      setTag(id, title, e.target.checked);
+      if (!tags.some((x) => x.id === id)) fill(); // deleted in another tab
+      refresh();
+    });
     pop.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'cancel') closePop();
-      if (act === 'apply') applyLamp(r, e.target);
+      if (act === 'new' && createTag([title])) { fill(); refresh(); }
     });
   }
 
@@ -670,6 +833,16 @@ ${higher
     if (snapViewing()) return; // read-only while showing a snapshot
     openSelect(card);
   }, true);
+  window.addEventListener('contextmenu', (e) => {
+    if (e.shiftKey || !(e.target instanceof Element)) return;
+    const card = e.target.closest('#blocks [name=songs] .card');
+    const col = card && card.closest('.col');
+    const title = col && siteLamp(col).title;
+    if (!title) return;
+    e.preventDefault(); e.stopPropagation();
+    closeOpen();
+    openTagPop(card, title);
+  }, true);
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closePop(); closeOpen(); } });
 
   // ---------- render ----------
@@ -680,8 +853,37 @@ ${higher
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
 
-  function render() {
-    closePop();
+  // The site's own filters (lamp checkboxes, search, INF songs) hide cells with an inline display:none.
+  const siteHidden = (col) => col.style.display === 'none';
+
+  // Hide the cells the tag filter leaves out, and tiers left with nothing to show.
+  function applyTagFilter(tag) {
+    const titles = tag && tag.titles;
+    const onPage = new Set(), shown = new Set();
+    for (const col of blocks.querySelectorAll('[name=songs] > .col')) {
+      const title = siteLamp(col).title;
+      const hide = !!titles && !titles.has(title);
+      col.toggleAttribute('data-ifx-hide', hide);
+      if (hide) continue;
+      onPage.add(title);
+      if (!siteHidden(col)) shown.add(title);
+    }
+    for (const tier of blocks.querySelectorAll('.col-md-12')) {
+      tier.toggleAttribute('data-ifx-empty', !!titles && !!tier.querySelector('[name=songs]')
+        && ![...tier.querySelectorAll('[name=songs] > .col:not([data-ifx-hide])')].some((c) => !siteHidden(c)));
+    }
+    if (!tag) { $('ifx-tag-summary').textContent = 'Right-click a song to tag it'; return; }
+    const why = [];
+    if (onPage.size < titles.size) why.push(`${titles.size - onPage.size} not on this page`);
+    if (shown.size < onPage.size) why.push(`${onPage.size - shown.size} hidden by the site's filters`);
+    $('ifx-tag-summary').textContent = `${shown.size} of ${titles.size} tagged songs shown`
+      + (why.length ? ` (${why.join(', ')})` : '');
+  }
+
+  function render(keepPop) {
+    if (!keepPop) closePop();
+    const tag = tagFilter();
+    applyTagFilter(tag);
     const b = document.body.classList;
     b.toggle('ifx-compact', settings.view !== 'default');
     b.toggle('ifx-v-squares', settings.view === 'squares');
@@ -705,7 +907,7 @@ ${higher
     const cmp = snap && { up: [], down: [], same: 0, missing: 0, then: Array(8).fill(0), now: Array(8).fill(0) };
     for (const col of blocks.querySelectorAll('[name=songs] > .col')) {
       const card = col.querySelector('.card');
-      if (!card) continue;
+      if (!card || col.hasAttribute('data-ifx-hide')) continue;
 
       if (viewing) {
         // Going back in time: only the snapshot's lamps, nothing about the present.
@@ -789,7 +991,7 @@ ${higher
     const sum = $('ifx-summary');
     const um = $('ifx-unmatched');
     if (!index.src || viewing) { sum.innerHTML = ''; um.hidden = true; return; }
-    sum.innerHTML = `This page: <b>${count.higher}</b> higher · ${count.lower} lower · ${count.same} same`
+    sum.innerHTML = `${tag ? 'Shown songs' : 'This page'}: <b>${count.higher}</b> higher · ${count.lower} lower · ${count.same} same`
       + (count.unmatched.length ? ` · <a class="link-secondary" id="ifx-um-toggle">${count.unmatched.length} unmatched</a>` : '')
       + (count.unplayed ? ` · ${count.unplayed} not played in source` : '')
       + (count.inf ? ` · ${count.inf} INF-only skipped` : '');
@@ -835,20 +1037,27 @@ ${higher
       .map((x) => `<div>${chip(x.from)} → ${chip(x.to)} ${esc(x.title)}</div>`).join('');
     sd.innerHTML = `<div class="text-secondary mb-1">"${esc(snap.name)}" taken ${fmtDate(snap.createdAt)}`
       + (snap.path ? ` on ${esc(snap.path)}` : '') + '</div>'
-      + `<div class="mb-1">Lamps on this page, snapshot → now: ${dist.join('') || 'no charts in common'}</div>`
+      + `<div class="mb-1">${tagFilter() ? 'Shown lamps' : 'Lamps on this page'}, snapshot → now: ${dist.join('') || 'no charts in common'}</div>`
       + (cmp.up.length ? `<div class="fw-bold">Improved</div>${list(cmp.up)}` : '<div class="text-secondary">No improvements yet.</div>')
       + (cmp.down.length ? `<div class="fw-bold mt-1">Lower than snapshot</div>${list(cmp.down)}` : '');
   }
 
-  // Re-render when the site confirms a lamp change (it rewrites the column's name attribute).
-  let pending = false;
-  new MutationObserver(() => {
-    if (pending) return;
-    pending = true;
-    requestAnimationFrame(() => { pending = false; render(); });
-  }).observe(blocks, { subtree: true, attributes: true, attributeFilter: ['name'] });
+  // Re-render when the site confirms a lamp change (it rewrites the column's name attribute), and
+  // refresh the tag filter when the site's own filters show or hide cells (their style attribute).
+  let pending = null;
+  new MutationObserver((muts) => {
+    const full = muts.some((m) => m.attributeName === 'name');
+    if (pending) { pending.full ||= full; return; }
+    pending = { full };
+    requestAnimationFrame(() => {
+      const { full: f } = pending;
+      pending = null;
+      if (f) render(); else applyTagFilter(tagFilter());
+    });
+  }).observe(blocks, { subtree: true, attributes: true, attributeFilter: ['name', 'style'] });
 
   buildIndex();
   renderSnapSelect();
+  renderTagSelect();
   render();
 })();
