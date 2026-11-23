@@ -1,0 +1,4 @@
+# Game data and personal score / snapshot exports
+*.bin
+*.csv
+*.json
